@@ -1,0 +1,164 @@
+%%[
+    VAR @mobileNumber, @Person, @PEID, @shortCode, @keyword, @shortCodeType
+    VAR @ClientDE, @MasterCaptureDE, @SMSOptIns, @TokenDE, @ContactKey, @RatesSubscribed
+    VAR @environment, @in_coming_msg, @AlreadySubscribed, @AlreadySubscribedRowCount
+    VAR @ClientRows, @rowCount, @RecentClientRow, @regEx, @mobileNumberWithoutCountryCode
+    VAR @isknownperson, @msg, @updateRates
+
+    SET @ClientDE = 'Client_Test'
+    SET @SMSOptIns = 'SMSOptIns_Test'
+    SET @TokenDE = 'ent.MCContext_Rockets'
+    SET @mobileNumber = Mobile_Number
+    SET @shortCode = Short_Code
+    SET @environment = '100017641'
+    SET @in_coming_msg = [MSG(0).NOUNS]
+
+    SET @AlreadySubscribed = LookupRows(@SMSOptIns, "MobilePhoneNumber", @mobileNumber, "DailyRates", "True")
+    SET @AlreadySubscribedRowCount = RowCount(@AlreadySubscribed)
+
+    IF @AlreadySubscribedRowCount > 0 THEN
+        SET @RatesSubscribed = 'True'
+    ELSE
+        SET @RatesSubscribed = 'False'
+    ENDIF
+
+    SET @ClientRows = LookupOrderedRows(@ClientDE, 1, "LastModifiedDate desc", "ClientMobilePhone", @mobileNumber)
+    SET @rowCount = RowCount(@ClientRows)
+
+    IF @rowCount > 0 THEN
+        SET @RecentClientRow = Row(@ClientRows, 1)
+        SET @Person = Field(@RecentClientRow, "PersonEntityId")
+        SET @ContactKey = Field(@RecentClientRow, "ID")
+    ENDIF
+
+    IF Empty(@Person) THEN
+        SET @regEx = "1(\d+)"
+        SET @mobileNumberWithoutCountryCode = RegExMatch(@mobileNumber, @regEx, 1)
+
+        SET @ClientRows = LookupOrderedRows(@ClientDE, 1, "LastModifiedDate desc", "ClientMobilePhone", @mobileNumberWithoutCountryCode)
+        SET @rowCount = RowCount(@ClientRows)
+
+        IF @rowCount > 0 THEN
+            SET @RecentClientRow = Row(@ClientRows, 1)
+            SET @Person = Field(@RecentClientRow, "PersonEntityId")
+            SET @ContactKey = Field(@RecentClientRow, "ID")
+        ENDIF
+
+        IF Empty(@Person) THEN
+            SET @isknownperson = "0"
+        ELSE
+            SET @isknownperson = "1"
+        ENDIF
+    ELSE
+        SET @isknownperson = "1"
+    ENDIF
+
+    IF Empty(@ContactKey) THEN
+        SET @ContactKey = @mobileNumber
+    ENDIF
+
+    IF Empty(@in_coming_msg) AND @RatesSubscribed == "False" THEN
+        SET @msg = Concat("Thanks for subscribing to SMS Daily Rates. Rpl HELP for help. Rpl TESTENDRATES to cancel. Msg&data rates may apply.")
+        SET @updateRates = UpsertData(@SMSOptIns, 1,
+            "MobilePhoneNumber", @mobileNumber,
+            "WeeklyRates", "0",
+            "DailyRates", "1",
+            "RatesOptInDate", Now(),
+            "AppID", "Organic",
+            "ContactType", "Daily_Rates",
+            "IsKnownClient", @isknownperson,
+            "MobilePhoneNumber_Text", @ContactKey)
+    ELSE
+        SET @msg = ''
+    ENDIF
+]%%
+
+%%[ IF EMPTY(@in_coming_msg) AND @RatesSubscribed == "False" THEN ]%%
+<script runat="server">
+    Platform.Load("core", "1");
+
+    var Mobile = Variable.GetValue("@mobileNumber");
+    var contactKey = Variable.GetValue("@ContactKey");
+    var environment = Variable.GetValue("@environment");
+    var TokenDE = Variable.GetValue("@TokenDE");
+    var CreatedDate = new Date();
+
+    var accessToken = Platform.Function.Lookup(TokenDE, 'Token', 'environment', environment);
+    var baseURL = Platform.Function.Lookup(TokenDE, 'restBaseURL', 'environment', environment);
+    baseURL += 'contacts/v1/contacts';
+
+    var subscriptionUrl = baseURL + "/sms/v1/contacts/subscriptions";
+    var subscriptionPayload = Stringify({
+        "subscriberkey": [contactKey]
+    });
+
+    try {
+        var postReq = new Script.Util.HttpRequest(subscriptionUrl);
+        postReq.method = "POST";
+        postReq.setHeader("Authorization", "Bearer " + accessToken);
+        postReq.contentType = "application/json";
+        postReq.postData = subscriptionPayload;
+        var postResp = postReq.send();
+
+        var postRespContent = Platform.Function.ParseJSON(String(postResp.content));
+        var contacts = postRespContent.contacts;
+
+        var hasTestRatesKeyword = false;
+
+        if (contacts && contacts.length > 0) {
+            for (var i = 0; i < contacts.length; i++) {
+                if (contacts[i].keyword && contacts[i].keyword.toUpperCase() === "TESTRATES") {
+                    hasTestRatesKeyword = true;
+                    break;
+                }
+            }
+        }
+
+        var payload = Stringify({
+            "contactKey": contactKey,
+            "attributeSets": [
+                {
+                    "name": "MobileConnect Demographics",
+                    "items": [{
+                        "values": [
+                            { "name": "Mobile Number", "value": Mobile },
+                            { "name": "Locale", "value": "US" },
+                            { "name": "Status", "value": 1 },
+                            { "name": "Priority", "value": 1 }
+                        ]
+                    }]
+                },
+                {
+                    "name": "MobileConnect Subscriptions",
+                    "items": [{
+                        "values": [
+                            { "name": "Keyword", "value": "72288A24-CE8E-4D67-92B6-4E419CDA9E26" },
+                            { "name": "Opt In Status", "value": "2" },
+                            { "name": "Opt Out Status", "value": 0 },
+                            { "name": "Mobile Number", "value": Mobile },
+                            { "name": hasTestRatesKeyword ? "Modified Date" : "Created Date", "value": CreatedDate }
+                        ]
+                    }]
+                }
+            ]
+        });
+
+        var req = new Script.Util.HttpRequest(baseURL);
+        req.method = hasTestRatesKeyword ? "PATCH" : "POST";
+        req.setHeader("Authorization", "Bearer " + accessToken);
+        req.contentType = "application/json";
+        req.postData = payload;
+        var resp = req.send();
+
+        if (resp == 'OK') {
+            Write(hasTestRatesKeyword ? "Updated Successfully" : "Created Successfully");
+        } else {
+            Write("Failed to " + (hasTestRatesKeyword ? "update" : "create"));
+        }
+
+    } catch (e) {
+        Write("Error: " + Stringify(e));
+    }
+</script>
+%%[ ENDIF ]%%
+%%=v(@msg)=%%
