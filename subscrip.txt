@@ -81,18 +81,23 @@
     var contactKey = Variable.GetValue("@ContactKey");
     var environment = Variable.GetValue("@environment");
     var TokenDE = Variable.GetValue("@TokenDE");
+    var shortCode = Variable.GetValue("@shortCode");
     var CreatedDate = new Date();
 
     var accessToken = Platform.Function.Lookup(TokenDE, 'Token', 'environment', environment);
     var baseURL = Platform.Function.Lookup(TokenDE, 'restBaseURL', 'environment', environment);
-    baseURL += 'contacts/v1/contacts';
-
-    var subscriptionUrl = baseURL + "/sms/v1/contacts/subscriptions";
-    var subscriptionPayload = Stringify({
-        "subscriberkey": [contactKey]
-    });
-
+    
+    // Use the new queueMO endpoint
+    var queueMOUrl = baseURL + "sms/v1/queueMO";
+    
     try {
+        // First check if the contact exists and has the TESTRATES keyword
+        var contactsUrl = baseURL + "contacts/v1/contacts";
+        var subscriptionUrl = contactsUrl + "/sms/v1/contacts/subscriptions";
+        var subscriptionPayload = Stringify({
+            "subscriberkey": [contactKey]
+        });
+
         Write("DEBUG: subscriptionUrl = " + subscriptionUrl + "<br>");
         Write("DEBUG: subscriptionPayload = " + subscriptionPayload + "<br>");
 
@@ -120,54 +125,87 @@
             }
         }
 
-        var payload = Stringify({
-            "contactKey": contactKey,
-            "attributeSets": [
+        // Now use the queueMO endpoint to simulate an MO message
+        var queueMOPayload = Stringify({
+            "subscribers": [
                 {
-                    "name": "MobileConnect Demographics",
-                    "items": [{
-                        "values": [
-                            { "name": "Mobile Number", "value": Mobile },
-                            { "name": "Locale", "value": "US" },
-                            { "name": "Status", "value": 1 },
-                            { "name": "Priority", "value": 1 }
-                        ]
-                    }]
-                },
-                {
-                    "name": "MobileConnect Subscriptions",
-                    "items": [{
-                        "values": [
-                            { "name": "Keyword", "value": "72288A24-CE8E-4D67-92B6-4E419CDA9E26" },
-                            { "name": "Opt In Status", "value": "2" },
-                            { "name": "Opt Out Status", "value": 0 },
-                            { "name": "Mobile Number", "value": Mobile },
-                            { "name": hasTestRatesKeyword ? "Modified Date" : "Created Date", "value": CreatedDate }
-                        ]
-                    }]
+                    "mobilenumber": Mobile,
+                    "subscriberkey": contactKey
                 }
-            ]
+            ],
+            "shortCode": shortCode,
+            "messageText": "TESTRATES"
         });
 
-        Write("DEBUG: baseURL = " + baseURL + "<br>");
-        Write("DEBUG: payload = " + payload + "<br>");
-        Write("DEBUG: HTTP method = " + (hasTestRatesKeyword ? "PATCH" : "POST") + "<br>");
+        Write("DEBUG: queueMOUrl = " + queueMOUrl + "<br>");
+        Write("DEBUG: queueMOPayload = " + queueMOPayload + "<br>");
 
-        var req = new Script.Util.HttpRequest(baseURL);
-        req.method = hasTestRatesKeyword ? "PATCH" : "POST";
-        req.setHeader("Authorization", "Bearer " + accessToken);
-        req.contentType = "application/json";
-        req.postData = payload;
-        var resp = req.send();
+        var moReq = new Script.Util.HttpRequest(queueMOUrl);
+        moReq.method = "POST";
+        moReq.setHeader("Authorization", "Bearer " + accessToken);
+        moReq.contentType = "application/json";
+        moReq.postData = queueMOPayload;
+        var moResp = moReq.send();
 
-        Write("DEBUG: resp.statusCode = " + resp.statusCode + "<br>");
-        Write("DEBUG: resp.content = " + String(resp.content) + "<br>");
+        Write("DEBUG: moResp.statusCode = " + moResp.statusCode + "<br>");
+        Write("DEBUG: moResp.content = " + String(moResp.content) + "<br>");
 
-        if (resp.statusCode == 200 || resp.statusCode == 201 || resp.statusCode == 202) {
-            Write(hasTestRatesKeyword ? "Updated Successfully" : "Created Successfully");
+        if (moResp.statusCode == 200 || moResp.statusCode == 201 || moResp.statusCode == 202) {
+            Write("MO message queued successfully<br>");
+            
+            // For backward compatibility, still update the contact
+            var payload = Stringify({
+                "contactKey": contactKey,
+                "attributeSets": [
+                    {
+                        "name": "MobileConnect Demographics",
+                        "items": [{
+                            "values": [
+                                { "name": "Mobile Number", "value": Mobile },
+                                { "name": "Locale", "value": "US" },
+                                { "name": "Status", "value": 1 },
+                                { "name": "Priority", "value": 1 }
+                            ]
+                        }]
+                    },
+                    {
+                        "name": "MobileConnect Subscriptions",
+                        "items": [{
+                            "values": [
+                                { "name": "Keyword", "value": "72288A24-CE8E-4D67-92B6-4E419CDA9E26" },
+                                { "name": "Opt In Status", "value": "2" },
+                                { "name": "Opt Out Status", "value": 0 },
+                                { "name": "Mobile Number", "value": Mobile },
+                                { "name": hasTestRatesKeyword ? "Modified Date" : "Created Date", "value": CreatedDate }
+                            ]
+                        }]
+                    }
+                ]
+            });
+
+            Write("DEBUG: contactsUrl = " + contactsUrl + "<br>");
+            Write("DEBUG: payload = " + payload + "<br>");
+            Write("DEBUG: HTTP method = " + (hasTestRatesKeyword ? "PATCH" : "POST") + "<br>");
+
+            var req = new Script.Util.HttpRequest(contactsUrl);
+            req.method = hasTestRatesKeyword ? "PATCH" : "POST";
+            req.setHeader("Authorization", "Bearer " + accessToken);
+            req.contentType = "application/json";
+            req.postData = payload;
+            var resp = req.send();
+
+            Write("DEBUG: resp.statusCode = " + resp.statusCode + "<br>");
+            Write("DEBUG: resp.content = " + String(resp.content) + "<br>");
+
+            if (resp.statusCode == 200 || resp.statusCode == 201 || resp.statusCode == 202) {
+                Write(hasTestRatesKeyword ? "Contact Updated Successfully" : "Contact Created Successfully");
+            } else {
+                Write("Failed to " + (hasTestRatesKeyword ? "update" : "create") + " contact<br>");
+                Write("Response: " + String(resp.content) + "<br>");
+            }
         } else {
-            Write("Failed to " + (hasTestRatesKeyword ? "update" : "create") + "<br>");
-            Write("Response: " + String(resp.content) + "<br>");
+            Write("Failed to queue MO message<br>");
+            Write("Response: " + String(moResp.content) + "<br>");
         }
 
     } catch (e) {
