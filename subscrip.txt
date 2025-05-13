@@ -93,12 +93,18 @@
     });
 
     try {
+        Write("DEBUG: subscriptionUrl = " + subscriptionUrl + "<br>");
+        Write("DEBUG: subscriptionPayload = " + subscriptionPayload + "<br>");
+
         var postReq = new Script.Util.HttpRequest(subscriptionUrl);
         postReq.method = "POST";
         postReq.setHeader("Authorization", "Bearer " + accessToken);
         postReq.contentType = "application/json";
         postReq.postData = subscriptionPayload;
         var postResp = postReq.send();
+
+        Write("DEBUG: postResp.statusCode = " + postResp.statusCode + "<br>");
+        Write("DEBUG: postResp.content = " + String(postResp.content) + "<br>");
 
         var postRespContent = Platform.Function.ParseJSON(String(postResp.content));
         var contacts = postRespContent.contacts;
@@ -143,6 +149,10 @@
             ]
         });
 
+        Write("DEBUG: baseURL = " + baseURL + "<br>");
+        Write("DEBUG: payload = " + payload + "<br>");
+        Write("DEBUG: HTTP method = " + (hasTestRatesKeyword ? "PATCH" : "POST") + "<br>");
+
         var req = new Script.Util.HttpRequest(baseURL);
         req.method = hasTestRatesKeyword ? "PATCH" : "POST";
         req.setHeader("Authorization", "Bearer " + accessToken);
@@ -150,14 +160,18 @@
         req.postData = payload;
         var resp = req.send();
 
-        if (resp == 'OK') {
+        Write("DEBUG: resp.statusCode = " + resp.statusCode + "<br>");
+        Write("DEBUG: resp.content = " + String(resp.content) + "<br>");
+
+        if (resp.statusCode == 200 || resp.statusCode == 201 || resp.statusCode == 202) {
             Write(hasTestRatesKeyword ? "Updated Successfully" : "Created Successfully");
         } else {
-            Write("Failed to " + (hasTestRatesKeyword ? "update" : "create"));
+            Write("Failed to " + (hasTestRatesKeyword ? "update" : "create") + "<br>");
+            Write("Response: " + String(resp.content) + "<br>");
         }
 
     } catch (e) {
-        Write("Error: " + Stringify(e));
+        Write("Error: " + Stringify(e) + "<br>");
     }
 </script>
 %%[ ENDIF ]%%
